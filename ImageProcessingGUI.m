@@ -69,7 +69,7 @@ function ImageProcessingGUI()
     lblFilter.Layout.Column = 3;
 
     ddFilterType = uidropdown(grid, ...
-        'Items', {'均值滤波', '高斯滤波', '中值滤波'}, ...
+        'Items', {'均值滤波', '高斯滤波'}, ...
         'Value', '均值滤波');
     ddFilterType.Layout.Row = 3;
     ddFilterType.Layout.Column = 4;
@@ -152,34 +152,38 @@ function ImageProcessingGUI()
         switch selectedFunction
             case '图像缩放'
                 scaleFactor = txtScale.Value;
-                processedImage = imresize(originalImage, scaleFactor);
+                processedImage = customResize(originalImage, scaleFactor);
 
             case '图像旋转'
                 angle = txtRotate.Value;
-                processedImage = imrotate(originalImage, angle);
+                processedImage = customRotate(originalImage, angle);
 
             case '添加噪声'
                 switch ddNoiseType.Value
                     case '高斯噪声'
-                        processedImage = imnoise(originalImage, 'gaussian');
+                        processedImage = addGaussianNoise(originalImage, 0, 0.01); % 设定均值和方差
                     case '椒盐噪声'
-                        processedImage = imnoise(originalImage, 'salt & pepper');
+                        processedImage = addSaltPepperNoise(originalImage, 0.05); % 设定噪声密度
                     case '泊松噪声'
-                        processedImage = imnoise(originalImage, 'poisson');
+                        processedImage = addPoissonNoise(originalImage);
                 end
 
-            case '滤波处理'
+
+             case '滤波处理'
+                % 获取滤波方式
                 switch ddFilterType.Value
                     case '均值滤波'
-                        kernel = fspecial('average', [3 3]);
-                        processedImage = imfilter(originalImage, kernel);
+                        % 设置滤波参数
+                        window_size = 5;    % 滤波器窗口大小（奇数）
+                        processedImage = mean_filter(originalImage, window_size);
                     case '高斯滤波'
-                        kernel = fspecial('gaussian', [5 5], 1);
-                        processedImage = imfilter(originalImage, kernel);
-                    case '中值滤波'
-                        grayImage = rgb2gray(originalImage);
-                        processedImage = medfilt2(grayImage, [3 3]);
+                        % 设置滤波参数
+                        window_size = 5;    % 滤波器窗口大小（奇数）
+                        sigma = 1.5;        % 高斯滤波的标准差
+                        processedImage = gaussian_filter(originalImage, window_size, sigma);
+
                 end
+
 
             case '直方图均衡化'
                 if size(originalImage, 3) == 3
@@ -191,18 +195,26 @@ function ImageProcessingGUI()
 
 
             case '直方图匹配'
+                % 检查是否是灰度图像
                 if size(originalImage, 3) == 3
                     grayImage = rgb2gray(originalImage);
                 else
                     grayImage = originalImage;
                 end
-                refImage = imread('bird.jpg'); % 示例参考图像路径
+
+                % 加载参考图像
+                refImage = imread('bird.jpg');
                 if size(refImage, 3) == 3
                     refGrayImage = rgb2gray(refImage);
                 else
                     refGrayImage = refImage;
                 end
-                processedImage = imhistmatch(grayImage, refGrayImage);
+
+                % 调用直方图匹配函数
+                processedImage = customHistogramMatching(grayImage, refGrayImage);
+
+
+
             case '灰度增强(线性)'
                 a = 1.5; % 增强系数
                 b = 20;  % 偏移量
@@ -232,7 +244,6 @@ function ImageProcessingGUI()
                     uialert(fig, '请先加载图像！', '错误');
                     return;
                 end
-
                 % 转换为灰度图像
                 if size(originalImage, 3) == 3
                     grayImage = rgb2gray(originalImage);
@@ -263,12 +274,6 @@ function ImageProcessingGUI()
 
 
             case '特征提取(HOG)'
-                % 检查是否加载了图像
-                if isempty(originalImage)
-                    uialert(fig, '请先加载图像！', '错误');
-                    return;
-                end
-
                 % 转换为灰度图像
                 if size(originalImage, 3) == 3
                     grayImage = rgb2gray(originalImage);
@@ -276,48 +281,32 @@ function ImageProcessingGUI()
                     grayImage = originalImage;
                 end
 
-                % 提取 HOG 特征
-                [hogFeatures, visualization] = extractHOGFeatures(grayImage);
+                % 生成初步掩膜（可以基于先验或程序生成）
+                [height, width] = size(grayImage);
+                fgMask = false(height, width);
+                bgMask = false(height, width);
 
-                % 更新 processedImage 为特征提取后的图像
-                processedImage = visualization; % 或者是通过 hogFeatures 可视化图像数据
+                % 自动生成前景掩膜（假设中心为前景）
+                fgMask(round(height/4):round(3*height/4), round(width/4):round(3*width/4)) = true;
 
-                % 在处理后图像面板上显示更新后的 processedImage
-                axes(axProcessed); % 将 axProcessed 设为当前坐标轴
-                cla(axProcessed); % 清空当前坐标轴
+                % 自动生成背景掩膜（假设边缘为背景）
+                bgMask(1:round(height/10), :) = true; % 上边缘
+                bgMask(round(9*height/10):end, :) = true; % 下边缘
+                bgMask(:, 1:round(width/10)) = true; % 左边缘
+                bgMask(:, round(9*width/10):end) = true; % 右边缘
 
-                % 如果要显示 HOG 特征图像，可以使用 visualization 中的图形显示方法
-                visualization.plot(); % 绘制 HOG 特征
-                title(axProcessed, 'HOG 特征图像');
+                % 使用 `lazysnapping` 函数进行分割
+                L = lazysnapping(originalImage, bgMask, fgMask);
 
-                % 更新 processedImage 用于后续的处理
+                % 将分割结果转换为掩膜
+                segmentedMask = L == 1;
+
+                % 应用掩膜到原图
+                processedImage = bsxfun(@times, originalImage, cast(segmentedMask, 'like', originalImage));
+
+                % 显示分割结果
                 imshow(processedImage, 'Parent', axProcessed);
-                disp('HOG 特征提取完成');
 
-            case '目标提取'
-                % 检查图像是否已加载
-                if isempty(originalImage)
-                    uialert(fig, '请先加载图像！', '错误');
-                    return;
-                end
-
-                % 将图像转换为灰度图
-                if size(originalImage, 3) == 3
-                    grayImage = rgb2gray(originalImage);
-                else
-                    grayImage = originalImage;
-                end
-
-                % 先进行边缘检测（使用默认算子或菜单选择的算子）
-                edgeImage = edge(grayImage, 'canny');
-
-                % 调用目标提取函数
-                targetImage = extractTargetFromEdges(edgeImage);
-
-                % 保存并显示结果
-                processedImage = targetImage;  % 更新全局变量
-                imshow(processedImage, 'Parent', axProcessed);
-                title(axProcessed, '目标提取结果');
 
 
 
@@ -353,7 +342,7 @@ function ImageProcessingGUI()
     % HOG + SVM训练函数
     function [svmModel, categories] = trainHOGSVM()
         % 数据集路径
-        datasetPath = 'C:\Users\lili\Documents\WeChat Files\wxid_7qbo2zquoibf22\FileStorage\File\2024-12\CUB_200_2011\CUB_200_2011\images';
+        datasetPath = 'C:\Users\admin\Downloads\CUB_200_2011.zip\CUB_200_2011\images';
         categories = dir(datasetPath);
         categories = categories([categories.isdir]); % 只保留文件夹
         categories = categories(3:end); % 排除'.'和'..'
@@ -401,7 +390,7 @@ function logEnhancedImage = logarithmicContrastEnhancement(grayImage, c)
 end
 
 
-
+% 非线性对比度增强：指数变换
 function expEnhancedImage = exponentialContrastEnhancement(grayImage, c)
     % 归一化图像到 [0, 1]
     normalizedImage = double(grayImage) / 255;
@@ -422,68 +411,180 @@ end
 function edges_robert = applyRobertEdgeDetection(inputImage)
     % 检查输入图像是否为灰度图像
     if size(inputImage, 3) == 3
-        % 如果是彩色图像，转换为灰度图像
         grayImage = rgb2gray(inputImage);
     else
-        grayImage = inputImage; % 已经是灰度图像
+        grayImage = inputImage;
     end
 
-    % 使用 Robert 算子进行边缘检测
-    edges_robert = edge(grayImage, 'roberts');
+    % 定义 Robert 算子
+    Gx = [1 0; 0 -1];
+    Gy = [0 1; -1 0];
+
+    % 卷积计算梯度
+    gradientX = conv2(double(grayImage), Gx, 'same');
+    gradientY = conv2(double(grayImage), Gy, 'same');
+
+    % 计算梯度幅值
+    edges_robert = sqrt(gradientX.^2 + gradientY.^2);
+
+    % 标准化到 [0, 255]
+    edges_robert = uint8(255 * mat2gray(edges_robert));
 end
+
 
 
 
 % Prewitt算子进行边缘检测
 function edges_prewitt = applyPrewittEdgeDetection(inputImage)
-     % 检查输入图像是否为灰度图像
     if size(inputImage, 3) == 3
-        % 如果是彩色图像，转换为灰度图像
         grayImage = rgb2gray(inputImage);
     else
-        grayImage = inputImage; % 已经是灰度图像
+        grayImage = inputImage;
     end
-    % 使用Prewitt算子进行边缘检测
-    edges_prewitt = edge(grayImage, 'Prewitt');
+
+    % 定义 Prewitt 算子
+    Gx = [-1 0 1; -1 0 1; -1 0 1];
+    Gy = [-1 -1 -1; 0 0 0; 1 1 1];
+
+    % 卷积计算梯度
+    gradientX = conv2(double(grayImage), Gx, 'same');
+    gradientY = conv2(double(grayImage), Gy, 'same');
+
+    % 计算梯度幅值
+    edges_prewitt = sqrt(gradientX.^2 + gradientY.^2);
+
+    % 标准化到 [0, 255]
+    edges_prewitt = uint8(255 * mat2gray(edges_prewitt));
 end
+
+
 
 % Sobel算子进行边缘检测
 function edges_sobel = applySobelEdgeDetection(inputImage)
-     % 检查输入图像是否为灰度图像
     if size(inputImage, 3) == 3
-        % 如果是彩色图像，转换为灰度图像
         grayImage = rgb2gray(inputImage);
     else
-        grayImage = inputImage; % 已经是灰度图像
+        grayImage = inputImage;
     end
-    % 使用Sobel算子进行边缘检测
-    edges_sobel = edge(grayImage, 'Sobel');
+
+    % 定义 Sobel 算子
+    Gx = [-1 0 1; -2 0 2; -1 0 1];
+    Gy = [-1 -2 -1; 0 0 0; 1 2 1];
+
+    % 卷积计算梯度
+    gradientX = conv2(double(grayImage), Gx, 'same');
+    gradientY = conv2(double(grayImage), Gy, 'same');
+
+    % 计算梯度幅值
+    edges_sobel = sqrt(gradientX.^2 + gradientY.^2);
+
+    % 标准化到 [0, 255]
+    edges_sobel = uint8(255 * mat2gray(edges_sobel));
 end
+
 
 %拉普拉斯算子进行边缘检测
 function edges_laplacian = applyLaplacianEdgeDetection(inputImage)
-     % 检查输入图像是否为灰度图像
     if size(inputImage, 3) == 3
-        % 如果是彩色图像，转换为灰度图像
         grayImage = rgb2gray(inputImage);
     else
-        grayImage = inputImage; % 已经是灰度图像
+        grayImage = inputImage;
     end
 
-    % 使用拉普拉斯算子进行边缘检测
-    edges_laplacian = edge(grayImage, 'log'); % log 表示使用拉普拉斯高斯算子
+    % 定义拉普拉斯算子
+    LaplacianKernel = [0 -1 0; -1 4 -1; 0 -1 0];
+
+    % 卷积计算
+    edges_laplacian = conv2(double(grayImage), LaplacianKernel, 'same');
+
+    % 取绝对值并标准化到 [0, 255]
+    edges_laplacian = uint8(255 * mat2gray(abs(edges_laplacian)));
 end
+
+
+% 膨胀
+function dilatedImage = customDilation(binaryImage, structuringElement)
+    % 获取图像和结构元素的尺寸
+    [rows, cols] = size(binaryImage);
+    [seRows, seCols] = size(structuringElement);
+
+    % 计算结构元素的中心
+    seCenterRow = floor(seRows / 2) + 1;
+    seCenterCol = floor(seCols / 2) + 1;
+
+    % 初始化膨胀结果图像
+    dilatedImage = zeros(rows, cols);
+
+    % 遍历图像的每个像素
+    for i = 1:rows
+        for j = 1:cols
+            % 遍历结构元素
+            for m = 1:seRows
+                for n = 1:seCols
+                    % 计算结构元素对应的图像位置
+                    ii = i + m - seCenterRow;
+                    jj = j + n - seCenterCol;
+
+                    % 判断是否越界
+                    if ii > 0 && ii <= rows && jj > 0 && jj <= cols
+                        % 如果结构元素和原图像重叠区域有1，则膨胀结果为1
+                        if structuringElement(m, n) && binaryImage(ii, jj)
+                            dilatedImage(i, j) = 1;
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+% 连通区域填充
+function filledImage = customFillHoles(binaryImage)
+    % 获取图像尺寸
+    [rows, cols] = size(binaryImage);
+
+    % 创建初始标记图像（边界为1，内部为0）
+    filledImage = binaryImage;
+    marker = zeros(rows, cols);
+    marker([1, rows], :) = 1;  % 设置上下边界
+    marker(:, [1, cols]) = 1;  % 设置左右边界
+
+    % 迭代填充
+    prevMarker = marker;
+    while true
+        % 膨胀操作
+        marker = customDilation(marker, ones(3, 3));
+        % 限制在原图像的补集中
+        marker = marker & ~binaryImage;
+
+        % 如果标记图像没有变化，则停止
+        if isequal(marker, prevMarker)
+            break;
+        end
+        prevMarker = marker;
+    end
+
+    % 填充孔洞
+    filledImage = ~marker | binaryImage;
+end
+
+
 
 %目标提取
 function targetImage = extractTargetFromEdges(edgeImage)
-    % 基于边缘图像提取目标
-    % 使用形态学操作进行目标提取
-    se = strel('disk', 5);  % 创建结构元素
-    dilatedImage = imdilate(edgeImage, se);  % 膨胀操作
-    
-    % 填充连通区域（如果需要）
-    targetImage = imfill(dilatedImage, 'holes');
+    % 检查输入是否为二值图像
+    if ~islogical(edgeImage)
+        edgeImage = edgeImage > 0;  % 转换为二值图像
+    end
+
+    % 自定义膨胀操作
+    structuringElement = ones(5);  % 等效于 strel('disk', 5)
+    dilatedImage = customDilation(edgeImage, structuringElement);
+
+    % 自定义孔洞填充
+    targetImage = customFillHoles(dilatedImage);
 end
+
 
 
 function [lbpFeatures, lbpImage] = customLBP(grayImage, radius, numPoints)
@@ -549,7 +650,267 @@ function equalizedImage = customHistogramEqualization(image)
 end
 
 
+function matchedImage = customHistogramMatching(inputImage, refImage)
+    % 检查输入图像是否为灰度图像
+    if size(inputImage, 3) == 3
+        inputGray = rgb2gray(inputImage);
+    else
+        inputGray = inputImage;
+    end
 
+    if size(refImage, 3) == 3
+        refGray = rgb2gray(refImage);
+    else
+        refGray = refImage;
+    end
+    % 计算输入图像的直方图和累计分布函数 (CDF)
+    inputHist = histcounts(inputGray(:), 0:256); % 直方图
+    inputCDF = cumsum(inputHist) / numel(inputGray); % 累计分布函数
+
+    % 计算参考图像的直方图和累计分布函数 (CDF)
+    refHist = histcounts(refGray(:), 0:256); % 直方图
+    refCDF = cumsum(refHist) / numel(refGray); % 累计分布函数
+
+    % 构造灰度值映射
+    grayLevels = 0:255;
+    mapping = zeros(256, 1);
+    for g = 1:256
+        [~, idx] = min(abs(inputCDF(g) - refCDF)); % 寻找最接近的参考 CDF 值
+        mapping(g) = grayLevels(idx); % 映射到参考灰度值
+    end
+    % 应用灰度值映射
+    matchedImage = mapping(double(inputGray) + 1);
+    % 转换为 uint8 格式
+    matchedImage = uint8(matchedImage);
+end
+
+
+% 图像缩放（双线性插值）
+function scaledImage = customResize(inputImage, scaleFactor)
+    [rows, cols, channels] = size(inputImage);
+    newRows = round(rows * scaleFactor);
+    newCols = round(cols * scaleFactor);
+
+    % 创建新图像
+    scaledImage = zeros(newRows, newCols, channels, 'like', inputImage);
+
+    % 计算缩放比例
+    rowScale = rows / newRows;
+    colScale = cols / newCols;
+    for r = 1:newRows
+        for c = 1:newCols
+            origR = r * rowScale;
+            origC = c * colScale;
+
+            % 获取周围像素
+            r1 = floor(origR);
+            r2 = min(r1 + 1, rows);
+            c1 = floor(origC);
+            c2 = min(c1 + 1, cols);
+            % 计算权重
+            deltaR = origR - r1;
+            deltaC = origC - c1;
+            % 双线性插值
+            for ch = 1:channels
+                scaledImage(r, c, ch) = ...
+                    (1 - deltaR) * (1 - deltaC) * inputImage(r1, c1, ch) + ...
+                    (1 - deltaR) * deltaC * inputImage(r1, c2, ch) + ...
+                    deltaR * (1 - deltaC) * inputImage(r2, c1, ch) + ...
+                    deltaR * deltaC * inputImage(r2, c2, ch);
+            end
+        end
+    end
+end
+
+% 图像旋转（最近邻插值）
+function rotatedImage = customRotate(inputImage, angle)
+    angleRad = deg2rad(angle);
+    [rows, cols, channels] = size(inputImage);
+
+    % 计算新图像尺寸
+    diagLength = ceil(sqrt(rows^2 + cols^2));
+    newRows = diagLength;
+    newCols = diagLength;
+    rotatedImage = zeros(newRows, newCols, channels, 'like', inputImage);
+
+    % 原图像中心
+    centerX = cols / 2;
+    centerY = rows / 2;
+
+    % 新图像中心
+    newCenterX = newCols / 2;
+    newCenterY = newRows / 2;
+
+    for r = 1:newRows
+        for c = 1:newCols
+            % 计算反向映射
+            x = (c - newCenterX) * cos(angleRad) + (r - newCenterY) * sin(angleRad) + centerX;
+            y = -(c - newCenterX) * sin(angleRad) + (r - newCenterY) * cos(angleRad) + centerY;
+
+            % 最近邻插值
+            x = round(x);
+            y = round(y);
+
+            if x >= 1 && x <= cols && y >= 1 && y <= rows
+                rotatedImage(r, c, :) = inputImage(y, x, :);
+            end
+        end
+    end
+end
+
+
+% 高斯噪声
+function noisyImage = addGaussianNoise(inputImage, mean, variance)
+    noise = mean + sqrt(variance) * randn(size(inputImage));
+    noisyImage = double(inputImage) + noise;
+    noisyImage = uint8(max(0, min(255, noisyImage)));
+end
+
+% 椒盐噪声
+function noisyImage = addSaltPepperNoise(inputImage, noiseDensity)
+    noisyImage = inputImage;
+    numPixels = numel(inputImage);
+    numSalt = round(noiseDensity * numPixels / 2);
+    numPepper = numSalt;
+
+    % 添加盐噪声
+    saltIndices = randperm(numPixels, numSalt);
+    noisyImage(saltIndices) = 255;
+
+    % 添加胡椒噪声
+    pepperIndices = randperm(numPixels, numPepper);
+    noisyImage(pepperIndices) = 0;
+end
+
+% 泊松噪声
+function noisyImage = addPoissonNoise(inputImage)
+    % 确保图像为灰度图像
+    if size(inputImage, 3) == 3
+        grayImage = rgb2gray(inputImage);
+    else
+        grayImage = inputImage;
+    end
+    % 将灰度图像转换为 double 类型，归一化到 [0, 1]
+    normalizedImage = double(grayImage) / 255;
+    % 生成泊松噪声
+    poissonNoise = poissrnd(normalizedImage);
+    % 重新归一化到 [0, 255]
+    noisyImage = uint8(poissonNoise * 255);
+end
+
+
+
+function segmentedImage = lazySnapping(inputImage, fgMask, bgMask)
+    % 检查输入图像是否为彩色
+    if size(inputImage, 3) == 3
+        labImage = rgb2lab(inputImage); % 转换为 LAB 颜色空间
+    else
+        error('Lazy Snapping requires a color input image.');
+    end
+
+    [height, width, ~] = size(inputImage);
+
+    % 初始化图的邻接矩阵
+    numNodes = height * width;
+    graphWeights = sparse(numNodes, numNodes);
+
+    % 计算权重（基于颜色差异和位置邻接）
+    scalingFactor = 10; % 调整权重的缩放因子
+    for y = 1:height - 1
+        for x = 1:width - 1
+            currentIdx = (y - 1) * width + x;
+
+            % 像素向右邻居的权重
+            rightIdx = currentIdx + 1;
+            diffRight = squeeze(labImage(y, x, :) - labImage(y, x + 1, :));
+            weightRight = exp(-norm(diffRight)^2 / scalingFactor);
+            graphWeights(currentIdx, rightIdx) = weightRight;
+            graphWeights(rightIdx, currentIdx) = weightRight;
+
+            % 像素向下邻居的权重
+            bottomIdx = currentIdx + width;
+            diffBottom = squeeze(labImage(y, x, :) - labImage(y + 1, x, :));
+            weightBottom = exp(-norm(diffBottom)^2 / scalingFactor);
+            graphWeights(currentIdx, bottomIdx) = weightBottom;
+            graphWeights(bottomIdx, currentIdx) = weightBottom;
+        end
+    end
+
+    % 构建图割算法的终端权重（前景/背景）
+    fgWeights = zeros(numNodes, 1);
+    bgWeights = zeros(numNodes, 1);
+
+    fgPixels = find(fgMask);
+    bgPixels = find(bgMask);
+
+    fgWeights(fgPixels) = Inf; % 确保前景像素属于前景
+    bgWeights(bgPixels) = Inf; % 确保背景像素属于背景
+
+    % 使用图割算法进行分割
+    [~, labels] = graphmincut(graphWeights, fgWeights, bgWeights);
+
+    % 重建分割图像
+    segmentedImage = reshape(labels, [height, width]);
+
+    % 可视化分割结果
+    figure; imshow(segmentedImage, []);
+    title('Segmented Image');
+end
+
+
+function output = mean_filter(input_image, window_size)
+    [height, width, channels] = size(input_image);
+   
+    output = zeros(height, width, channels, 'uint8');
+    
+    half_window = floor(window_size / 2);
+    
+    % 遍历每个像素并应用均值滤波
+    for i = 1:height
+        for j = 1:width
+            % 定义当前像素的邻域范围
+            x_min = max(1, i - half_window);
+            x_max = min(height, i + half_window);
+            y_min = max(1, j - half_window);
+            y_max = min(width, j + half_window);
+            
+            % 提取邻域区域
+            region = input_image(x_min:x_max, y_min:y_max, :);
+            
+            % 计算邻域区域的均值
+            output(i, j, :) = mean(mean(region, 1), 2);
+        end
+    end
+end
+
+
+function output = gaussian_filter(input_image, window_size, sigma)
+    [height, width, channels] = size(input_image);
+    output = zeros(height, width, channels, 'uint8');
+    % 创建高斯核
+    [X, Y] = meshgrid(-floor(window_size / 2):floor(window_size / 2), ...
+                      -floor(window_size / 2):floor(window_size / 2));
+    gaussian_kernel = exp(-(X.^2 + Y.^2) / (2 * sigma^2));
+    gaussian_kernel = gaussian_kernel / sum(gaussian_kernel(:));  % 归一化
+    % 遍历每个像素并应用高斯滤波
+    for i = 1:height
+        for j = 1:width
+            % 定义当前像素的邻域范围
+            x_min = max(1, i - floor(window_size / 2));
+            x_max = min(height, i + floor(window_size / 2));
+            y_min = max(1, j - floor(window_size / 2));
+            y_max = min(width, j + floor(window_size / 2));
+            
+            % 提取邻域区域
+            region = input_image(x_min:x_max, y_min:y_max, :);
+            
+            % 计算加权平均（使用高斯核）
+            for c = 1:channels
+                output(i, j, c) = sum(sum(double(region(:,:,c)) .* gaussian_kernel(1:size(region,1), 1:size(region,2)))) / sum(gaussian_kernel(:));
+            end
+        end
+    end
+end
 
 
 
